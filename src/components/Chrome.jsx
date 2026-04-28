@@ -25,31 +25,19 @@ export function Chrome({ activePoll, phase, currentUser, onSignOut, isPlayer, pl
           {isLive && <span className="badge" style={{ background: "var(--red)", color: "white" }}>LIVE</span>}
         </button>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, paddingLeft: 14, marginLeft: 14, borderLeft: "1px solid var(--line-soft)" }}>
-        <div style={{
-          width: 30, height: 30, borderRadius: "50%",
+      <div className="chrome__user">
+        <div className="chrome__avatar" style={{
           background: isPlayer ? "var(--surface-2)" : "linear-gradient(135deg, var(--primary), var(--primary-2))",
-          display: "grid", placeItems: "center",
-          color: "white", fontWeight: 700, fontSize: 12,
-          flexShrink: 0,
         }}>{initial}</div>
-        <div style={{ minWidth: 0, lineHeight: 1.2 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 160 }}>
-            {displayName}
-          </div>
-          <div className="muted" style={{ fontSize: 10.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 160 }}>
-            {subLabel}
-          </div>
+        <div className="chrome__user-meta">
+          <div className="chrome__user-name">{displayName}</div>
+          <div className="chrome__user-sub muted">{subLabel}</div>
         </div>
         <button onClick={onSignOut}
-          title={isPlayer ? "Exit" : "Sign out"}
-          style={{
-            background: "transparent", border: "1px solid var(--line-soft)",
-            color: "var(--text-muted)",
-            padding: "6px 10px", borderRadius: 8,
-            fontSize: 12, fontWeight: 500, cursor: "pointer",
-            whiteSpace: "nowrap",
-          }}>{isPlayer ? "Exit" : "Sign out"}</button>
+          className="chrome__signout"
+          title={isPlayer ? "Exit" : "Sign out"}>
+          {isPlayer ? "Exit" : "Sign out"}
+        </button>
       </div>
     </div>
   );

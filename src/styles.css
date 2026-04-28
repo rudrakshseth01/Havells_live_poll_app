@@ -107,6 +107,63 @@ input, textarea, select { font-family: inherit; color: inherit; }
   background: rgba(255,255,255,.18);
 }
 
+/* User info on the right of the chrome */
+.chrome__user {
+  display: flex; align-items: center; gap: 10px;
+  padding-left: 14px; margin-left: 14px;
+  border-left: 1px solid var(--line-soft);
+  min-width: 0;
+}
+.chrome__avatar {
+  width: 30px; height: 30px; border-radius: 50%;
+  display: grid; place-items: center;
+  color: white; font-weight: 700; font-size: 12px;
+  flex-shrink: 0;
+}
+.chrome__user-meta { min-width: 0; line-height: 1.2; }
+.chrome__user-name {
+  font-size: 12.5px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 160px;
+}
+.chrome__user-sub {
+  font-size: 10.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 160px;
+}
+.chrome__signout {
+  background: transparent; border: 1px solid var(--line-soft);
+  color: var(--text-muted);
+  padding: 6px 10px; border-radius: 8px;
+  font-size: 12px; font-weight: 500; cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Mobile chrome — strip the cramped middle, keep brand + avatar + exit */
+@media (max-width: 640px) {
+  .chrome {
+    padding: 8px 12px;
+    gap: 10px;
+  }
+  .chrome__brand { font-size: 13px; flex-shrink: 0; min-width: 0; }
+  .chrome__brand > span {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .chrome__brand small { display: none; }
+  .chrome__brand .dot {
+    width: 22px; height: 22px; font-size: 12px; flex-shrink: 0;
+  }
+  .chrome__tabs { display: none; }
+  .chrome__user {
+    margin-left: auto;
+    padding-left: 10px;
+    gap: 8px;
+  }
+  .chrome__user-meta { display: none; }
+  .chrome__avatar { width: 28px; height: 28px; }
+}
+
 /* ---------- Stage ---------- */
 .stage {
   min-height: calc(100vh - 53px);
