@@ -363,6 +363,25 @@ export function subscribeReactions(sessionId, onInsert) {
   };
 }
 
+// Broadcast pub-sub for phase transitions. Bypasses Postgres and the WAL
+// pipeline, so phase changes don't queue behind answer events. The DB write
+// is still done separately as the durable source of truth — broadcast just
+// makes the live UX instant.
+export function openBroadcastChannel(sessionId, onPhase) {
+  const ch = supabase
+    .channel(`session-bcast:${sessionId}`, { config: { broadcast: { self: false } } })
+    .on("broadcast", { event: "phase" }, ({ payload }) => onPhase(payload))
+    .subscribe();
+  return {
+    send(payload) {
+      try { ch.send({ type: "broadcast", event: "phase", payload }); } catch {}
+    },
+    close() {
+      supabase.removeChannel(ch);
+    },
+  };
+}
+
 // ============================================================
 // Helpers
 // ============================================================

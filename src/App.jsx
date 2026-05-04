@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { supabase } from "./lib/supabase";
 import * as db from "./lib/db";
 import { AuthScreen } from "./components/Auth";
@@ -162,6 +162,34 @@ function AdminWorkspace({ user, onSignOut }) {
     await reloadPolls();
   }
 
+  // Broadcast channel for instant phase transitions (bypasses Postgres WAL).
+  // Opens once per active session; closes on session end / unmount.
+  const broadcastRef = useRef(null);
+  useEffect(() => {
+    if (!activeSession?.id) {
+      broadcastRef.current = null;
+      return;
+    }
+    const ch = db.openBroadcastChannel(activeSession.id, (payload) => {
+      // Listener: not strictly needed on admin (admin originates the change),
+      // but harmless and keeps state consistent if multiple admin tabs are open.
+      setActiveSession((prev) => (prev ? { ...prev, ...payload } : prev));
+    });
+    broadcastRef.current = ch;
+    return () => { ch.close(); broadcastRef.current = null; };
+  }, [activeSession?.id]);
+
+  // Single helper for any phase change: optimistic local update → broadcast →
+  // durable DB write in the background. Admin's screen flips instantly,
+  // players see it within ~100ms via broadcast (no WAL queue).
+  const changePhase = useCallback((patch, dbCall) => {
+    setActiveSession((prev) => (prev ? { ...prev, ...patch } : prev));
+    broadcastRef.current?.send(patch);
+    Promise.resolve()
+      .then(() => dbCall())
+      .catch((e) => console.error("phase persist failed:", e));
+  }, []);
+
   // Body
   let body;
   if (view === "edit") {
@@ -182,10 +210,13 @@ function AdminWorkspace({ user, onSignOut }) {
       poll={activePoll}
       session={activeSession}
       onSessionUpdate={setActiveSession}
-      onStart={async () => {
+      onStart={() => {
         const firstQ = activePoll.questions[0];
-        await db.setSessionPhase(activeSession.id, "voting", firstQ.id);
-        setActiveSession({ ...activeSession, phase: "voting", current_question_id: firstQ.id, current_question_started_at: new Date().toISOString() });
+        const startedAt = new Date().toISOString();
+        changePhase(
+          { phase: "voting", current_question_id: firstQ.id, current_question_started_at: startedAt },
+          () => db.setSessionPhase(activeSession.id, "voting", firstQ.id)
+        );
         setView("live");
       }}
       onExit={exitLive}
@@ -195,6 +226,7 @@ function AdminWorkspace({ user, onSignOut }) {
       poll={activePoll}
       session={activeSession}
       onSessionUpdate={setActiveSession}
+      onChangePhase={changePhase}
       onExit={exitLive}
       onDone={() => setView("done")}
     />;
@@ -268,7 +300,7 @@ function AdminLobbyContainer({ poll, session, onSessionUpdate, onStart, onExit }
 /* ============================================================
    ADMIN LIVE CONTAINER — wires timer, distribution, phase transitions
    ============================================================ */
-function AdminLiveContainer({ poll, session, onSessionUpdate, onExit, onDone }) {
+function AdminLiveContainer({ poll, session, onSessionUpdate, onChangePhase, onExit, onDone }) {
   const currentQ = useMemo(() => {
     if (!session.current_question_id) return poll.questions[0];
     return poll.questions.find((q) => q.id === session.current_question_id) || poll.questions[0];
@@ -341,33 +373,48 @@ function AdminLiveContainer({ poll, session, onSessionUpdate, onExit, onDone }) 
     return () => clearInterval(i);
   }, [session.phase, currentQ?.id, currentQ?.timer, session.current_question_started_at]);
 
-  // Auto-advance to research when time runs out OR everyone answered
+  // Auto-advance to research when time runs out OR everyone answered.
+  // Optimistic + broadcast via onChangePhase, so admin and players flip
+  // screens immediately rather than waiting on the WAL echo.
   useEffect(() => {
     if (session.phase !== "voting" || !currentQ) return;
     const total = participants.length;
     const everyoneAnswered = total > 0 && answeredCount >= total;
     if (secondsLeft <= 0 || everyoneAnswered) {
-      const t = setTimeout(async () => {
-        try { await db.setSessionPhase(session.id, "research"); } catch {}
+      const t = setTimeout(() => {
+        onChangePhase(
+          { phase: "research" },
+          () => db.setSessionPhase(session.id, "research")
+        );
       }, 600);
       return () => clearTimeout(t);
     }
-  }, [session.phase, secondsLeft, answeredCount, participants.length, currentQ?.id, session.id]);
+  }, [session.phase, secondsLeft, answeredCount, participants.length, currentQ?.id, session.id, onChangePhase]);
 
-  async function next() {
+  function next() {
     if (session.phase === "voting") {
-      await db.setSessionPhase(session.id, "research");
+      onChangePhase(
+        { phase: "research" },
+        () => db.setSessionPhase(session.id, "research")
+      );
       return;
     }
     // research phase → next question or done
     const nextIdx = qIndex + 1;
     if (nextIdx >= poll.questions.length) {
-      await db.finalizeSession(session.id);
+      onChangePhase(
+        { phase: "done" },
+        () => db.finalizeSession(session.id)
+      );
       onDone();
       return;
     }
     const nextQ = poll.questions[nextIdx];
-    await db.setSessionPhase(session.id, "voting", nextQ.id);
+    const startedAt = new Date().toISOString();
+    onChangePhase(
+      { phase: "voting", current_question_id: nextQ.id, current_question_started_at: startedAt },
+      () => db.setSessionPhase(session.id, "voting", nextQ.id)
+    );
   }
 
   return (
@@ -515,10 +562,18 @@ function PlayerLive({ session, poll, participant, onExit, onSessionUpdate }) {
   const [answers, setAnswers] = useState([]);
   const [myPick, setMyPick] = useState(null);
 
-  // Realtime: session, participants, reactions
+  // Realtime: session, participants, reactions, broadcast
   useEffect(() => {
     db.listParticipants(session.id).then(setParticipants);
-    const offS = db.subscribeSession(session.id, (next) => onSessionUpdate({ ...session, ...next }));
+    // Broadcast: instant phase updates (bypasses Postgres WAL queue)
+    const bcast = db.openBroadcastChannel(session.id, (payload) => {
+      onSessionUpdate((prev) => ({ ...(prev || session), ...payload }));
+    });
+    // postgres_changes fallback: durable, eventually-consistent. Catches anything
+    // broadcast missed (e.g. player joined late, host clicked before player connected).
+    const offS = db.subscribeSession(session.id, (next) => {
+      onSessionUpdate((prev) => ({ ...(prev || session), ...next }));
+    });
     const offP = db.subscribeParticipants(session.id, (payload) => {
       setParticipants((prev) => {
         if (payload.eventType === "DELETE") return prev.filter((p) => p.id !== payload.old.id);
@@ -533,7 +588,27 @@ function PlayerLive({ session, poll, participant, onExit, onSessionUpdate }) {
       setReactions((rs) => [...rs, r]);
       setTimeout(() => setReactions((rs) => rs.filter((x) => x.id !== r.id)), 2800);
     });
-    return () => { offS(); offP(); offR(); };
+    return () => { bcast.close(); offS(); offP(); offR(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.id]);
+
+  // Mobile recovery: when a phone unlocks (or the tab is refocused after the
+  // websocket was suspended), the broadcast/postgres_changes streams may have
+  // missed events. Re-fetch the session row to catch up immediately.
+  useEffect(() => {
+    const onVis = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const fresh = await db.getSession(session.id);
+        if (fresh) onSessionUpdate((prev) => ({ ...(prev || session), ...fresh }));
+      } catch {}
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onVis);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.id]);
 
